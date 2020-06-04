@@ -374,7 +374,7 @@ final public class CraftType {
             gravityInclineDistance = integerFromObject(data.getOrDefault("gravityInclineDistance", -1));
             int dropdist = integerFromObject(data.getOrDefault("gravityDropDistance", -8));
             gravityDropDistance = dropdist > 0 ? -dropdist : dropdist;
-            collisionSound = Sound.valueOf((String) data.getOrDefault("collisionSound", "BLOCK_ANVIL_LAND"));
+            collisionSound = Sound.valueOf((String) data.getOrDefault("collisionSound", "BLOCK_BELL_USE"));
             maxSignsWithString = stringDoubleMapFromObject(data.getOrDefault("maxSignsWithString", new HashMap<>()));
             maxCannons = stringDoubleMapFromObject(data.getOrDefault("maxCannons", new HashMap<>()));
         } catch (Exception e){
