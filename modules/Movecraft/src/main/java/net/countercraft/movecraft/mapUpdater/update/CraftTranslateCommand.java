@@ -95,7 +95,7 @@ public class CraftTranslateCommand extends UpdateCommand {
                         playerVehicle.eject();
                     }
                     toMove.add(new EntityUpdateCommand(entity, displacement.getX(), displacement.getY(), displacement.getZ(), 0, 0));
-                } else if (!craft.getType().getOnlyMovePlayers() || entity.getType() == EntityType.PRIMED_TNT) {
+                } else if (entity.getType() == EntityType.PRIMED_TNT || (!craft.getType().getOnlyMovePlayers() && craft.getType().shouldEntityBeMoved(entity))) {
                     boolean isPlayerVehicle = false;
                     for (Entity pass : entity.getPassengers()) {
                         if (pass.getType() != EntityType.PLAYER) {

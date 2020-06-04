@@ -26,6 +26,8 @@ import org.bukkit.Material;
 import org.bukkit.Sound;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 import org.yaml.snakeyaml.Yaml;
 
@@ -106,6 +108,7 @@ final public class CraftType {
     @NotNull private final Map<List<String>, Double> maxSignsWithString;
     @NotNull private final Map<List<String>, Double> maxCannons;
     @NotNull private final Set<Material> forbiddenHoverOverBlocks;
+    @NotNull private final Set<Class<? extends Entity>> moveEntityList;
     private final int gravityDropDistance;
     private final int gravityInclineDistance;
     private final int keepMovingOnSinkMaxMove;
@@ -193,6 +196,23 @@ final public class CraftType {
             canHoverOverWater = (boolean) data.getOrDefault("canHoverOverWater", true);
             moveEntities = (boolean) data.getOrDefault("moveEntities", true);
             onlyMovePlayers = (boolean) data.getOrDefault("onlyMovePlayers", true);
+            moveEntityList = new HashSet<Class<? extends Entity>>();
+            moveEntityList.add(Player.class);
+            if (data.containsKey("moveEntityList")) {
+                ClassLoader cl = ClassLoader.getSystemClassLoader();
+                ArrayList objList = (ArrayList) data.get("moveEntityList");
+                for (Object i : objList) {
+                    if (!(i instanceof String)) {
+                        continue;
+                    }
+                    try{
+                        Class cls = cl.loadClass("org.bukkit.entity."+(String) i);
+                        moveEntityList.add(cls);
+                    }catch (Exception e){
+                        Bukkit.getLogger().warning("["+f.getName()+"] moveEntityList: wrong Value: "+i);
+                    }
+                }
+            }
             useGravity = (boolean) data.getOrDefault("useGravity", false);
             hoverLimit = Math.max(0, integerFromObject(data.getOrDefault("hoverLimit", 0)));
             harvestBlocks = new ArrayList<>();
@@ -754,6 +774,15 @@ final public class CraftType {
         return forbiddenHoverOverBlocks;
     }
 
+    public boolean shouldEntityBeMoved(Entity entity){
+        for (Class<? extends Entity> cls : moveEntityList) {
+            if(cls.isInstance(entity)){
+                return true;
+            }
+        }
+        return false;
+    }
+  
     public int getGravityDropDistance() {
         return gravityDropDistance;
     }
