@@ -4,7 +4,7 @@
   <groupId>net.countercraft</groupId>
   <artifactId>movecraft</artifactId>
   <name>Movecraft</name>
-  <version>7.0.0_for_1.8.8-1.15.2_beta_23</version>
+  <version>7.0.0_for_1.8.8-1.15.2_beta_24</version>
   <url>http://github.com/apdevteam/Movecraft</url>
   <build>
     <sourceDirectory>src/main/java</sourceDirectory>
@@ -162,8 +162,8 @@
       <url>https://github.com/DerPavlov/mvn-repo/raw/master/</url>
     </repository>
     <repository>
-      <id>vault-repo</id>
-      <url>http://nexus.hc.to/content/repositories/pub_releases</url>
+      <id>jitpack.io</id>
+      <url>https://jitpack.io</url>
     </repository>
     <repository>
       <id>ess-repo</id>
@@ -224,7 +224,7 @@
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>net.milkbowl.vault</groupId>
+      <groupId>com.github.MilkBowl</groupId>
       <artifactId>VaultAPI</artifactId>
       <version>1.7</version>
       <scope>provided</scope>
