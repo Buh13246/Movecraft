@@ -153,7 +153,7 @@ public class IWorldHandler extends WorldHandler {
     }
 
     @Override
-    public void translateCraft(@NotNull Craft craft, @NotNull MovecraftLocation displacement) {
+    public void translateCraft(@NotNull Craft craft, @NotNull MovecraftLocation displacement, @NotNull org.bukkit.World world) {
         //TODO: Add supourt for rotations
         //A craftTranslateCommand should only occur if the craft is moving to a valid position
         //*******************************************
@@ -162,16 +162,15 @@ public class IWorldHandler extends WorldHandler {
         BlockPosition translateVector = locationToPosition(displacement);
         List<BlockPosition> positions = new ArrayList<>();
         for(MovecraftLocation movecraftLocation : craft.getHitBox()) {
-            BlockPosition origPos = locationToPosition((movecraftLocation)).b(translateVector);
-            positions.add(origPos);
+            positions.add(locationToPosition((movecraftLocation)).b(translateVector));
 
         }
-
+        WorldServer oldNativeWorld = ((CraftWorld) craft.getWorld()).getHandle();
+        WorldServer nativeWorld = ((CraftWorld) world).getHandle();
         //*******************************************
         //*         Step two: Get the tiles         *
         //*******************************************
-        WorldServer nativeWorld = ((CraftWorld) craft.getWorld()).getHandle();
-        List<TileHolder> tiles = getTiles(positions, nativeWorld);
+        List<TileHolder> tiles = getTiles(positions, oldNativeWorld);
         //*******************************************
         //*   Step three: Translate all the blocks  *
         //*******************************************
@@ -183,7 +182,7 @@ public class IWorldHandler extends WorldHandler {
         List<IBlockData> blockData = new ArrayList<>();
         List<BlockPosition> newPositions = new ArrayList<>();
         for(BlockPosition position : positions){
-            blockData.add(nativeWorld.getType(position));
+            blockData.add(oldNativeWorld.getType(position));
             newPositions.add(position.a(translateVector));
         }
         //create the new block
@@ -196,8 +195,8 @@ public class IWorldHandler extends WorldHandler {
         //*******************************************
         //*   Step five: Destroy the leftovers      *
         //*******************************************
-        Collection<BlockPosition> deletePositions =  CollectionUtils.filter(positions,newPositions);
-        setAir(deletePositions, nativeWorld);
+        Collection<BlockPosition> deletePositions = oldNativeWorld == nativeWorld ? CollectionUtils.filter(positions,newPositions) : positions;
+        setAir(deletePositions, oldNativeWorld);
         //*******************************************
         //*   Step six: Process fire spread         *
         //*******************************************
@@ -327,6 +326,7 @@ public class IWorldHandler extends WorldHandler {
         }
         chunkSection.setType(position.getX() & 15, position.getY() & 15, position.getZ() & 15, data);
         world.notify(position, data, data, 3);
+        world.getChunkProvider().getLightEngine().a(position);
         chunk.markDirty();
     }
 
@@ -379,7 +379,7 @@ public class IWorldHandler extends WorldHandler {
             nativeWorld.capturedTileEntities.put(newPosition, tile);
             return;
         }
-        tile.setPosition(newPosition);
+        tile.setLocation(nativeWorld, newPosition);
         chunk.tileEntities.put(newPosition, tile);
     }
 

@@ -19,6 +19,8 @@ package net.countercraft.movecraft.mapUpdater.update;
 
 import net.countercraft.movecraft.utils.TeleportUtils;
 import org.bukkit.Location;
+import org.bukkit.Sound;
+import org.bukkit.World;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 
@@ -34,6 +36,9 @@ public class EntityUpdateCommand extends UpdateCommand {
     private final double z;
     private final float yaw;
     private final float pitch;
+    private final World world;
+    private final Sound sound;
+    private final float volume;
 
     public EntityUpdateCommand(Entity entity, double dx, double dy, double dz, float yaw, float pitch) {
         this.entity = entity;
@@ -42,6 +47,33 @@ public class EntityUpdateCommand extends UpdateCommand {
         this.z = dz;
         this.yaw = yaw;
         this.pitch = pitch;
+        this.world = entity.getWorld();
+        this.sound = null;
+        this.volume = 0.0f;
+    }
+
+    public EntityUpdateCommand(Entity entity, double x, double y, double z, float yaw, float pitch, World world) {
+        this.entity = entity;
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.yaw = yaw;
+        this.pitch = pitch;
+        this.world = world;
+        this.sound = null;
+        this.volume = 0.0f;
+    }
+
+    public EntityUpdateCommand(Entity entity, double x, double y, double z, float yaw, float pitch, World world, Sound sound, float volume) {
+        this.entity = entity;
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.yaw = yaw;
+        this.pitch = pitch;
+        this.world = world;
+        this.sound = sound;
+        this.volume = volume;
     }
 
 
@@ -52,15 +84,22 @@ public class EntityUpdateCommand extends UpdateCommand {
     @Override
     public void doUpdate() {
         final Location entityLoc = entity.getVehicle() != null ? entity.getVehicle().getLocation() : entity.getLocation();
-        if (!(entity instanceof Player)) {
-            TeleportUtils.teleportEntity(entity, new Location(entity.getWorld(), entityLoc.getX() + x, entityLoc.getY() + y, entityLoc.getZ() + z,yaw + entityLoc.getYaw(),pitch + entityLoc.getPitch()));
+        final Location destLoc = new Location(world, entityLoc.getX() + x, entityLoc.getY() + y, entityLoc.getZ() + z,yaw + entityLoc.getYaw(),pitch + entityLoc.getPitch());
+        if (!entity.getWorld().equals(world)) {
+            entity.teleport(destLoc);
+            if (sound != null) {
+                ((Player) entity).playSound(entityLoc, sound, volume, 1.0f);
+            }
+            return;
+        } else if (!(entity instanceof Player)) {
+            TeleportUtils.teleportEntity(entity, destLoc);
             return;
         }
+        Location playerLoc = entity.getLocation();
+
         //Movecraft.getInstance().getWorldHandler().addPlayerLocation((Player) entity,x,y,z,yaw,pitch);
-        TeleportUtils.teleport((Player) entity, new Location(entity.getWorld(), entityLoc.getX() + x, entityLoc.getY() + y, entityLoc.getZ() + z), yaw);
-
-
-
+        Location location = new Location(world, playerLoc.getX() + x, playerLoc.getY() + y, playerLoc.getZ() + z);
+        TeleportUtils.teleport((Player) entity, location, yaw);
     }
 
     @Override
@@ -82,4 +121,3 @@ public class EntityUpdateCommand extends UpdateCommand {
                 this.entity.equals(other.entity);
     }
 }
-

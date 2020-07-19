@@ -23,6 +23,8 @@ import org.bukkit.Material;
 import java.util.*;
 
 public class Settings {
+
+    public static boolean CheckForUpdates = true;
     public static boolean RestrictSiBsToRegions = false;
     public static boolean IGNORE_RESET = false;
     public static boolean Debug = false;
@@ -69,6 +71,7 @@ public class Settings {
 
     public static Map<String, TownyWorldHeightLimits> TownProtectionHeightLimits;
     public static Map<Material, Integer> DurabilityOverride;
+    public static boolean CraftsUseNetherPortals = false;
     public static boolean IsPaper = false;
     public static boolean IsPre1_9 = false;
     public static boolean IsLegacy = true; //false if version is 1.13 or higher

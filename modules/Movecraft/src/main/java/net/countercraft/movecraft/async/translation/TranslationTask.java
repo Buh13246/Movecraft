@@ -1,9 +1,11 @@
 package net.countercraft.movecraft.async.translation;
 
 import net.countercraft.movecraft.Movecraft;
+import net.countercraft.movecraft.MovecraftChunk;
 import net.countercraft.movecraft.MovecraftLocation;
 import net.countercraft.movecraft.async.AsyncTask;
 import net.countercraft.movecraft.config.Settings;
+import net.countercraft.movecraft.craft.ChunkManager;
 import net.countercraft.movecraft.craft.Craft;
 import net.countercraft.movecraft.craft.CraftManager;
 import net.countercraft.movecraft.craft.CraftType;
@@ -13,38 +15,44 @@ import net.countercraft.movecraft.events.CraftTranslateEvent;
 import net.countercraft.movecraft.events.ItemHarvestEvent;
 import net.countercraft.movecraft.localisation.I18nSupport;
 import net.countercraft.movecraft.mapUpdater.update.*;
-
 import net.countercraft.movecraft.utils.*;
 import org.bukkit.*;
+import org.bukkit.World.Environment;
 import org.bukkit.block.Barrel;
 import org.bukkit.block.Block;
 import org.bukkit.block.Chest;
 import org.bukkit.block.Furnace;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Orientable;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.potion.PotionEffect;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.logging.Logger;
 
 import static net.countercraft.movecraft.utils.MathUtils.withinWorldBorder;
 
 public class TranslationTask extends AsyncTask {
     private static final Set<Material> FALL_THROUGH_BLOCKS = new HashSet<>();//Settings.IsLegacy ? new Material[]{}:new Material[]{Material.AIR,
+    private World world;
     private int dx, dy, dz;
     private BitmapHitBox newHitBox, oldHitBox, oldFluidList, newFluidList;
     private boolean failed;
     private boolean collisionExplosion = false;
     private String failMessage;
-    private Collection<UpdateCommand> updates = new LinkedList<>();
+    private Collection<UpdateCommand> updates = new HashSet<>();
+    private Sound sound = null;
+    private float volume = 0.0f;
 
-    public TranslationTask(Craft c, int dx, int dy, int dz) {
+    public TranslationTask(Craft c, World world, int dx, int dy, int dz) {
         super(c);
+        this.world = world;
         this.dx = dx;
         this.dy = dy;
         this.dz = dz;
@@ -141,7 +149,7 @@ public class TranslationTask extends AsyncTask {
     }
 
     @Override
-    protected void execute() {
+    protected void execute() throws InterruptedException, ExecutionException {
 
         //Check if theres anything to move
         if(oldHitBox.isEmpty()){
@@ -154,7 +162,7 @@ public class TranslationTask extends AsyncTask {
             return;
         }
         //call event
-        final CraftPreTranslateEvent preTranslateEvent = new CraftPreTranslateEvent(craft, dx, dy, dz);
+        final CraftPreTranslateEvent preTranslateEvent = new CraftPreTranslateEvent(craft, dx, dy, dz, world);
         Bukkit.getServer().getPluginManager().callEvent(preTranslateEvent);
         if (preTranslateEvent.isCancelled()) {
             fail(preTranslateEvent.getFailMessage(), preTranslateEvent.isPlayingFailSound());
@@ -169,13 +177,64 @@ public class TranslationTask extends AsyncTask {
         if (dz != preTranslateEvent.getDz()) {
             dz = preTranslateEvent.getDz();
         }
+        world = preTranslateEvent.getWorld();
+
         final int minY = oldHitBox.getMinY();
         final int maxY = oldHitBox.getMaxY();
 
+        if (!checkFuel()) {
+            return;
+        }
+
+        // proccess nether portals
+        if (Settings.CraftsUseNetherPortals && craft.getWorld().getEnvironment() != Environment.THE_END
+                && world.equals(craft.getWorld())) {
+
+            // ensure chunks are loaded for portal checking only if change in location is
+            // large
+            List<MovecraftChunk> chunksToLoad = ChunkManager.getChunks(oldHitBox, world, dx, dy, dz);
+            MovecraftChunk.addSurroundingChunks(chunksToLoad, 2);
+            ChunkManager.checkChunks(chunksToLoad);
+            if (!chunksToLoad.isEmpty()) {
+                ChunkManager.syncLoadChunks(chunksToLoad).get();
+            }
+
+            for (MovecraftLocation oldLocation : oldHitBox) {
+
+                Location location = oldLocation.translate(dx, dy, dz).toBukkit(craft.getWorld());
+                Block block = craft.getWorld().getBlockAt(location);
+                if (block.getType() == (Settings.IsLegacy ? LegacyUtils.PORTAL : Material.NETHER_PORTAL)) {
+
+                    if (processNetherPortal(block)) {
+                        sound = Sound.BLOCK_PORTAL_TRAVEL;
+                        volume = 0.25f;
+                        break;
+                    }
+
+                }
+
+            }
+
+        }
+
+        // ensure chunks are loaded only if world is different or change in location is
+        // large
+        // !world.equals(craft.getW()) || Math.abs(dx) + oldHitBox.getXLength() >=
+        // (Bukkit.getServer().getViewDistance() - 1) * 16 || Math.abs(dz) +
+        // oldHitBox.getZLength() >= (Bukkit.getServer().getViewDistance() - 1) * 16
+        List<MovecraftChunk> chunksToLoad = ChunkManager.getChunks(oldHitBox, craft.getW());
+        chunksToLoad.addAll(ChunkManager.getChunks(oldHitBox, world, dx, dy, dz));
+        MovecraftChunk.addSurroundingChunks(chunksToLoad, 1);
+        ChunkManager.checkChunks(chunksToLoad);
+        if (!chunksToLoad.isEmpty()) {
+            ChunkManager.syncLoadChunks(chunksToLoad).get();
+        }
+
+        // Only modify dy when not switching worlds
         //Check if the craft is too high
-        if(craft.getType().getMaxHeightLimit() < craft.getHitBox().getMinY()){
+        if(world.equals(craft.getW()) && craft.getType().getMaxHeightLimit(craft.getW()) < craft.getHitBox().getMinY()){
             dy = Math.min(dy,-1);
-        }else if(craft.getType().getMaxHeightAboveGround() > 0){
+        }else if(world.equals(craft.getW()) && craft.getType().getMaxHeightAboveGround(craft.getW()) > 0){
             final MovecraftLocation middle = oldHitBox.getMidPoint();
             int testY = minY;
             while (testY > 0){
@@ -183,7 +242,7 @@ public class TranslationTask extends AsyncTask {
                 if (!craft.getWorld().getBlockAt(middle.getX(),testY,middle.getZ()).getType().name().endsWith("AIR"))
                     break;
             }
-            if (minY - testY > craft.getType().getMaxHeightAboveGround()) {
+            if (minY - testY > craft.getType().getMaxHeightAboveGround(world)) {
                 dy = Math.min(dy,-1);
             }
         }
@@ -195,64 +254,12 @@ public class TranslationTask extends AsyncTask {
             fail(I18nSupport.getInternationalisedString("Translation - Failed Craft hit minimum height limit"));
             return;
         }
-        if (craft.getType().getFuelBurnRate() > 0.0) {
-            new BukkitRunnable() {
-                @Override
-                public void run() {
-                    // check for fuel, burn some from a furnace if needed. Blocks of coal are supported, in addition to coal and charcoal
-                    double fuelBurnRate = craft.getType().getFuelBurnRate();
-                    // going down doesn't require fuel
-                    if (dy == -1 && dx == 0 && dz == 0)
-                        fuelBurnRate = 0.0;
-                    if (dy > 0)
-                        fuelBurnRate *= 2;
-                    if (fuelBurnRate == 0.0 || craft.getSinking()) {
-                        return;
-                    }
-                    if (craft.getBurningFuel() >= fuelBurnRate) {
-                        craft.setBurningFuel(craft.getBurningFuel() - fuelBurnRate);
-                        return;
-                    }
-                    Block fuelHolder = null;
-                    for (MovecraftLocation bTest : oldHitBox) {
-                        Block b = craft.getWorld().getBlockAt(bTest.getX(), bTest.getY(), bTest.getZ());
-                        //Get all fuel holders
-                        if (b.getType() == Material.FURNACE) {
-                            InventoryHolder holder = (InventoryHolder) b.getState();
-                            for (Material fuel : Settings.FuelTypes.keySet()) {
-                                if (holder.getInventory().contains(fuel)) {
-                                    fuelHolder = b;
-                                    break;
-                                }
-                            }
-                        }
-                        if (fuelHolder != null) break;
-
-                    }
-                    if (fuelHolder == null) {
-                        fail(I18nSupport.getInternationalisedString("Translation - Failed Craft out of fuel"));
-                        return;
-                    }
-                    Furnace furnace = (Furnace) fuelHolder.getState();
-                    for (Material fuel : Settings.FuelTypes.keySet()){
-                        if (furnace.getInventory().contains(fuel)){
-                            ItemStack item = furnace.getInventory().getItem(furnace.getInventory().first(fuel));
-                            int amount = item.getAmount();
-                            if (amount == 1) {
-                                furnace.getInventory().remove(item);
-                            } else {
-                                item.setAmount(amount - 1);
-                            }
-                            craft.setBurningFuel(craft.getBurningFuel() + Settings.FuelTypes.get(item.getType()));
-                        }
-                    }
-                }
-            }.runTask(Movecraft.getInstance());
 
 
-        }
+
+
         //Process gravity
-        if (craft.getType().getUseGravity() && !craft.getSinking()){
+        if (world.equals(craft.getWorld()) && craft.getType().getUseGravity() && !craft.getSinking()){
             int incline = inclineCraft(oldHitBox);
             if (incline > 0){
                 boolean tooSteep = craft.getType().getGravityInclineDistance() > -1 && incline > craft.getType().getGravityInclineDistance();
@@ -275,17 +282,20 @@ public class TranslationTask extends AsyncTask {
             } else if (!isOnGround(oldHitBox)){
                 dy = dropDistance(oldHitBox);
             }
+            if (Settings.Debug) {
+                Movecraft.getInstance().getLogger().info("dy: " + dy);
+            }
         }
         //Fail the movement if the craft is too high and if the craft is not explosive
-        if (dy>0 && maxY + dy > craft.getType().getMaxHeightLimit() && craft.getType().getCollisionExplosion() <= 0f) {
+        if (dy>0 && maxY + dy > craft.getType().getMaxHeightLimit(world) && craft.getType().getCollisionExplosion() <= 0f) {
             fail(I18nSupport.getInternationalisedString("Translation - Failed Craft hit height limit"));
             return;
-        } else if (dy>0 && maxY + dy > craft.getType().getMaxHeightLimit()) { //If explosive and too high, set dy to 0
+        } else if (dy>0 && maxY + dy > craft.getType().getMaxHeightLimit(world)) { //If explosive and too high, set dy to 0
             dy = 0;
-        } else if (minY + dy < craft.getType().getMinHeightLimit() && dy < 0 && !craft.getSinking() && !craft.getType().getUseGravity()) {
+        } else if (minY + dy < craft.getType().getMinHeightLimit(world) && dy < 0 && !craft.getSinking() && !craft.getType().getUseGravity()) {
             fail(I18nSupport.getInternationalisedString("Translation - Failed Craft hit minimum height limit"));
             return;
-        } else if (minY + dy < craft.getType().getMinHeightLimit() && dy < 0 && craft.getType().getUseGravity()) {
+        } else if (minY + dy < craft.getType().getMinHeightLimit(world) && dy < 0 && craft.getType().getUseGravity()) {
             //if a craft using gravity hits the minimum height limit, set dy = 0 instead of failing
             dy = 0;
         }
@@ -300,19 +310,19 @@ public class TranslationTask extends AsyncTask {
             final MovecraftLocation newLocation = oldLocation.translate(dx,dy,dz);
             //If the new location already exists in the old hitbox than this is unnecessary because a craft can't hit
             //itself
-            if(oldHitBox.contains(newLocation)){
+            if(world.equals(craft.getW()) && oldHitBox.contains(newLocation)){
                 newHitBox.add(newLocation);
                 continue;
             }
-            final Block b = newLocation.toBukkit(craft.getWorld()).getBlock();
-            final Material testMaterial = b.getType();
+
+            final Material testMaterial = newLocation.toBukkit(world).getBlock().getType();
 
             if ((testMaterial.equals(Material.CHEST) || testMaterial.equals(Material.TRAPPED_CHEST)) && checkChests(testMaterial, newLocation)) {
                 //prevent chests collision
                 fail(String.format(I18nSupport.getInternationalisedString("Translation - Failed Craft is obstructed") + " @ %d,%d,%d,%s", newLocation.getX(), newLocation.getY(), newLocation.getZ(), newLocation.toBukkit(craft.getWorld()).getBlock().getType().toString()));
                 return;
             }
-            if (!withinWorldBorder(craft.getWorld(), newLocation)) {
+            if (!withinWorldBorder(world, newLocation)) {
                 fail(I18nSupport.getInternationalisedString("Translation - Failed Craft cannot pass world border") + String.format(" @ %d,%d,%d", newLocation.getX(), newLocation.getY(), newLocation.getZ()));
                 return;
             }
@@ -366,21 +376,23 @@ public class TranslationTask extends AsyncTask {
         if (craft.getType().getForbiddenHoverOverBlocks().size() > 0){
             MovecraftLocation test = new MovecraftLocation(newHitBox.getMidPoint().getX(), newHitBox.getMinY(), newHitBox.getMidPoint().getZ());
             test = test.translate(0, -1, 0);
-            while (test.toBukkit(craft.getWorld()).getBlock().getType() == Material.AIR){
+            while (test.toBukkit(world).getBlock().getType() == Material.AIR){
                 test = test.translate(0, -1, 0);
             }
-            Material testType = test.toBukkit(craft.getWorld()).getBlock().getType();
+            Material testType = test.toBukkit(world).getBlock().getType();
             if (craft.getType().getForbiddenHoverOverBlocks().contains(testType)){
                 fail(String.format(I18nSupport.getInternationalisedString("Translation - Failed Craft over block"), testType.name().toLowerCase().replace("_", " ")));
             }
         }
         //call event
-        CraftTranslateEvent translateEvent = new CraftTranslateEvent(craft, oldHitBox, newHitBox);
+        CraftTranslateEvent translateEvent = new CraftTranslateEvent(craft, oldHitBox, newHitBox, world);
         Bukkit.getServer().getPluginManager().callEvent(translateEvent);
         if(translateEvent.isCancelled()){
             this.fail(translateEvent.getFailMessage(), translateEvent.isPlayingFailSound());
             return;
         }
+
+        // do not switch world if sinking
         if(craft.getSinking()){
             List<MovecraftLocation> air = new ArrayList<>();
             for(MovecraftLocation location: oldHitBox){
@@ -421,8 +433,8 @@ public class TranslationTask extends AsyncTask {
                 }*/
                 int potEffRange = craft.getType().getEffectRange();
                 Map<PotionEffect,Integer> potionEffects = craft.getType().getPotionEffectsToApply();
-                Location oldLocation = location.translate(-dx,-dy,-dz).toBukkit(craft.getWorld());
-                Location newLocation = location.toBukkit(craft.getWorld());
+                Location oldLocation = location.translate(-dx,-dy,-dz).toBukkit(craft.getW());
+                Location newLocation = location.toBukkit(world);
                 if (!oldLocation.getBlock().getType().equals(Material.AIR)) {
                     updates.add(new ExplosionUpdateCommand(newLocation, explosionForce));
                     if (potEffRange != 0 && !potionEffects.isEmpty())
@@ -437,23 +449,30 @@ public class TranslationTask extends AsyncTask {
         if(!collisionBox.isEmpty() && craft.getType().getCruiseOnPilot()){
             CraftManager.getInstance().removeCraft(craft);
             for(MovecraftLocation location : oldHitBox){
-                Pair<Material, Object> phaseBlock = craft.getPhaseBlocks().getOrDefault(location, new Pair<>(Material.AIR, Settings.IsLegacy ? (byte) 0 : Bukkit.createBlockData(Material.AIR)));
+                Pair<Material, Object> phaseBlock = craft.getPhaseBlocks().getOrDefault(location.toBukkit(craft.getW()), new Pair<>(Material.AIR, Settings.IsLegacy ? (byte) 0 : Bukkit.createBlockData(Material.AIR)));
                 if (Settings.IsLegacy) {
                     updates.add(new BlockCreateCommand(craft.getWorld(), location, phaseBlock.getLeft(), (byte) phaseBlock.getRight()));
                     continue;
                 }
                 updates.add(new BlockCreateCommand(craft.getWorld(), location, phaseBlock.getLeft(), (BlockData) phaseBlock.getRight()));
-
             }
             newHitBox = new BitmapHitBox();
         }
 
         if(!collisionBox.isEmpty()){
-            Bukkit.getServer().getPluginManager().callEvent(new CraftCollisionEvent(craft, collisionBox));
+            Bukkit.getServer().getPluginManager().callEvent(new CraftCollisionEvent(craft, collisionBox, world));
         }
-        if (oldHitBox.isEmpty())
-            return;
-        if (!craft.getType().getMoveEntities() && !(craft.getSinking() && craft.getType().getOnlyMovePlayers())) {
+
+        updates.add(new CraftTranslateCommand(craft, new MovecraftLocation(dx, dy, dz), world, sound, volume));
+
+        //prevents torpedo and rocket pilots
+        if (craft.getType().getMoveEntities() && !(craft.getSinking() && craft.getType().getOnlyMovePlayers())) {
+            Location midpoint = new Location(
+                    craft.getW(),
+                    (oldHitBox.getMaxX() + oldHitBox.getMinX())/2.0,
+                    (oldHitBox.getMaxY() + oldHitBox.getMinY())/2.0,
+                    (oldHitBox.getMaxZ() + oldHitBox.getMinZ())/2.0);
+        } else {
             //add releaseTask without playermove to manager
             if (!craft.getType().getCruiseOnPilot() && !craft.getSinking())  // not necessary to release cruiseonpilot crafts, because they will already be released
                 CraftManager.getInstance().addReleaseTask(craft);
@@ -519,66 +538,182 @@ public class TranslationTask extends AsyncTask {
         if (harvestedBlocks.isEmpty()) {
             return;
         }
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                ArrayList<Inventory> chests = new ArrayList<>();
-                //find chests
-                for (MovecraftLocation loc : oldHitBox) {
-                    Block block = craft.getWorld().getBlockAt(loc.getX(), loc.getY(), loc.getZ());
-                    if (block.getType() == Material.CHEST || block.getType() == Material.TRAPPED_CHEST)
-                        chests.add(((InventoryHolder) (block.getState())).getInventory());
-                }
-
-                for (MovecraftLocation harvestedBlock : harvestedBlocks) {
-
-                    Block block = craft.getWorld().getBlockAt(harvestedBlock.getX(), harvestedBlock.getY(), harvestedBlock.getZ());
-                    List<ItemStack> drops = new ArrayList<>(block.getDrops());
-
-                    if (Settings.IsLegacy) {
-                        //generate seed drops
-                        if (block.getType() == LegacyUtils.CROPS) {
-                            Random rand = new Random();
-                            int amount = rand.nextInt(4);
-                            if (amount > 0) {
-                                ItemStack seeds = new ItemStack(LegacyUtils.SEEDS, amount);
-                                drops.add(seeds);
-                            }
-                        }
-                    } else {
-                        if (block.getType() == Material.WHEAT) {
-                            Random rand = new Random();
-                            int amount = rand.nextInt(4);
-                            if (amount > 0) {
-                                ItemStack seeds = new ItemStack(Material.WHEAT_SEEDS, amount);
-                                drops.add(seeds);
-                            }
-                        }
-                    }
-                    //get contents of inventories before deposting
-
-                    if (block.getState() instanceof InventoryHolder) {
-                        if (block.getState() instanceof Chest) {
-                            drops.addAll(Arrays.asList(((Chest) block.getState()).getBlockInventory().getContents()));
-                        } else if (block.getState() instanceof Barrel) {
-                            drops.addAll(Arrays.asList(((Barrel) block.getState()).getInventory().getContents()));
-                        } else {
-                            drops.addAll(Arrays.asList((((InventoryHolder) block.getState()).getInventory().getContents())));
-                        }
-                    }
-                    //call event
-                    final ItemHarvestEvent harvestEvent = new ItemHarvestEvent(craft, drops, harvestedBlock.toBukkit(craft.getWorld()));
-                    Bukkit.getServer().getPluginManager().callEvent(harvestEvent);
-                    for (ItemStack drop : drops) {
-                        ItemStack retStack = putInToChests(drop, chests);
-                        if (retStack != null)
-                            //drop items on position
-                            updates.add(new ItemDropUpdateCommand(new Location(craft.getWorld(), harvestedBlock.getX(), harvestedBlock.getY(), harvestedBlock.getZ()), retStack));
-                    }
-                }
+        Bukkit.getScheduler().callSyncMethod(Movecraft.getInstance(), () -> {
+            ArrayList<Inventory> chests = new ArrayList<>();
+            //find chests
+            for (MovecraftLocation loc : oldHitBox) {
+                Block block = craft.getWorld().getBlockAt(loc.getX(), loc.getY(), loc.getZ());
+                if (block.getType() == Material.CHEST || block.getType() == Material.TRAPPED_CHEST)
+                    chests.add(((InventoryHolder) (block.getState())).getInventory());
             }
 
-        }.runTask(Movecraft.getInstance());
+            for (MovecraftLocation harvestedBlock : harvestedBlocks) {
+
+                Block block = craft.getWorld().getBlockAt(harvestedBlock.getX(), harvestedBlock.getY(), harvestedBlock.getZ());
+                List<ItemStack> drops = new ArrayList<>(block.getDrops());
+
+                if (Settings.IsLegacy) {
+                    //generate seed drops
+                    if (block.getType() == LegacyUtils.CROPS) {
+                        Random rand = new Random();
+                        int amount = rand.nextInt(4);
+                        if (amount > 0) {
+                            ItemStack seeds = new ItemStack(LegacyUtils.SEEDS, amount);
+                            drops.add(seeds);
+                        }
+                    }
+                } else {
+                    if (block.getType() == Material.WHEAT) {
+                        Random rand = new Random();
+                        int amount = rand.nextInt(4);
+                        if (amount > 0) {
+                            ItemStack seeds = new ItemStack(Material.WHEAT_SEEDS, amount);
+                            drops.add(seeds);
+                        }
+                    }
+                }
+                //get contents of inventories before deposting
+
+                if (block.getState() instanceof InventoryHolder) {
+                    if (block.getState() instanceof Chest) {
+                        drops.addAll(Arrays.asList(((Chest) block.getState()).getBlockInventory().getContents()));
+                    } else if (block.getState() instanceof Barrel) {
+                        drops.addAll(Arrays.asList(((Barrel) block.getState()).getInventory().getContents()));
+                    } else {
+                        drops.addAll(Arrays.asList((((InventoryHolder) block.getState()).getInventory().getContents())));
+                    }
+                }
+                //call event
+                final ItemHarvestEvent harvestEvent = new ItemHarvestEvent(craft, drops, harvestedBlock.toBukkit(craft.getWorld()));
+                Bukkit.getServer().getPluginManager().callEvent(harvestEvent);
+                for (ItemStack drop : drops) {
+                    ItemStack retStack = putInToChests(drop, chests);
+                    if (retStack != null)
+                        //drop items on position
+                        updates.add(new ItemDropUpdateCommand(new Location(craft.getWorld(), harvestedBlock.getX(), harvestedBlock.getY(), harvestedBlock.getZ()), retStack));
+                }
+
+            }
+            return true;
+        });
+    }
+    
+    private boolean processNetherPortal(@NotNull Block block) {
+
+        int portalX = 0;
+        int portalZ = 0;
+        Location portalNegCorner = new Location(block.getWorld(), 0, 0, 0);
+        Location portalPosCorner = new Location(block.getWorld(), 0, 0, 0);
+        if (Settings.IsLegacy) {
+            if (block.getData() == 2)
+                portalZ = 1;
+            else
+                portalX = 1;
+        } else {
+            final Orientable orient = (Orientable) block.getBlockData();
+            if (orient.getAxis() == Axis.X) {
+                portalX = 1;
+            } else {
+                portalZ = 1;
+            }
+        }
+
+
+        Material testMaterial = null;
+        int testX = block.getX();
+        int testY = block.getY();
+        int testZ = block.getZ();
+
+        // find lowest x or z
+        do {
+            testX -= portalX;
+            testZ -= portalZ;
+            testMaterial = block.getWorld().getBlockAt(testX, testY, testZ).getType();
+        } while (testMaterial == Material.NETHER_PORTAL);
+        portalNegCorner.setX(testX + portalX);
+        portalNegCorner.setZ(testZ + portalZ);
+
+        testX = block.getX();
+        testZ = block.getZ();
+
+        // find highest x or z
+        do {
+            testX += portalX;
+            testZ += portalZ;
+            testMaterial = block.getWorld().getBlockAt(testX, testY, testZ).getType();
+        } while (testMaterial == Material.NETHER_PORTAL);
+        portalPosCorner.setX(testX - portalX);
+        portalPosCorner.setZ(testZ - portalZ);
+
+        testX = block.getX();
+        testZ = block.getZ();
+
+        // find lowest y
+        do {
+            testY -= 1;
+            testMaterial = block.getWorld().getBlockAt(testX, testY, testZ).getType();
+        } while (testMaterial == Material.NETHER_PORTAL);
+        portalNegCorner.setY(testY + 1);
+
+        testY = block.getY();
+
+        // find highest y
+        do {
+            testY += 1;
+            testMaterial = block.getWorld().getBlockAt(testX, testY, testZ).getType();
+        } while (testMaterial == Material.NETHER_PORTAL);
+        portalPosCorner.setY(testY - 1);
+
+        if (portalX == 1) { // if portal is on x axis fail if craft x length does not fit in portal
+            if (oldHitBox.getMinX() + dx < portalNegCorner.getBlockX())
+                return false;
+            if (oldHitBox.getMaxX() + dx > portalPosCorner.getBlockX())
+                return false;
+        } else { // if portal is on z axis fail if craft z length does not fit in portal
+            if (oldHitBox.getMinZ() + dz < portalNegCorner.getBlockZ())
+                return false;
+            if (oldHitBox.getMaxZ() + dz > portalPosCorner.getBlockZ())
+                return false;
+        }
+
+        // fail if craft y length does not fit in portal
+        if (oldHitBox.getMinY() + dy < portalNegCorner.getBlockY())
+            return false;
+        if (oldHitBox.getMaxY() + dy > portalPosCorner.getBlockY())
+            return false;
+
+        String worldName = craft.getW().getName();
+        double scaleFactor = 1.0;
+        if (craft.getW().getEnvironment() == Environment.NETHER) { // if in nether
+            world = Bukkit.getWorld(worldName.substring(0, worldName.length() - 7)); // remove _nether from world name
+            scaleFactor = 8.0;
+        } else { // if in overworld
+            world = Bukkit.getWorld(worldName += "_nether"); // add _nether to world name
+            scaleFactor = 0.125;
+        }
+
+        // scale destination x and z based on negative most corner of portal
+        int scaleDx = (int) (portalNegCorner.getBlockX() * scaleFactor - portalNegCorner.getBlockX());
+        int scaleDz = (int) (portalNegCorner.getBlockZ() * scaleFactor - portalNegCorner.getBlockZ());
+        dx += scaleDx;
+        dz += scaleDz;
+
+        MovecraftLocation midpoint = oldHitBox.getMidPoint();
+        if (portalX == 0) { // if portal is facing x axis
+            if (midpoint.getX() < block.getX()) { // craft is on negative side of portal
+                dx += oldHitBox.getXLength() + 1;
+            } else { // craft is on positive side of portal
+                dx -= oldHitBox.getXLength() + 1;
+            }
+        } else { // if portal is facing z axis
+            if (midpoint.getZ() < block.getZ()) { // craft is on negative side of portal
+                dz += oldHitBox.getZLength() + 1;
+            } else { // craft is on positive side of portal
+                dz -= oldHitBox.getZLength() + 1;
+            }
+        }
+        return true;
+
     }
 
     private ItemStack putInToChests(ItemStack stack, ArrayList<Inventory> inventories) {
@@ -618,7 +753,7 @@ public class TranslationTask extends AsyncTask {
         } while ((testType != Material.AIR &&
                 !craft.getType().getPassthroughBlocks().contains(testType) &&
                 !oldHitBox.contains(surfaceLoc)) &&
-                surfaceLoc.getY() + 1 > craft.getType().getMaxHeightLimit());
+                surfaceLoc.getY() + 1 > craft.getType().getMaxHeightLimit(craft.getW()));
         return surfaceLoc;
     }
 
@@ -680,12 +815,14 @@ public class TranslationTask extends AsyncTask {
                 final MovecraftLocation translated = ml.translate(dx, dy, dz);
                 //This has to be subtracted by one, or non-passthrough blocks will be within the y drop path
                 //obstructing the craft
-                Material testType = translated.translate(0, dropDistance , 0).toBukkit(craft.getWorld()).getBlock().getType();
+
+                MovecraftLocation dropped = translated.translate(0, dropDistance - 1 , 0);
+                Material testType = dropped.toBukkit(craft.getWorld()).getBlock().getType();
                 hitGround = testType != Material.AIR &&
                         !craft.getType().getPassthroughBlocks().contains(testType) &&
                         !(craft.getType().getHarvestBlocks().contains(testType) &&
-                        craft.getType().getHarvesterBladeBlocks().contains(ml.translate(0, 1, 0).toBukkit(craft.getWorld()).getBlock().getType())) ||
-                        craft.getType().getMinHeightLimit() == translated.translate(0, dropDistance + 1 , 0).getY();
+                        craft.getType().getHarvesterBladeBlocks().contains(ml.toBukkit(craft.getW()).getBlock().getType())) ||
+                        craft.getType().getMinHeightLimit(craft.getW()) == translated.translate(0, dropDistance + 1 , 0).getY();
 
                 if (hitGround) {
                     break;
@@ -704,7 +841,7 @@ public class TranslationTask extends AsyncTask {
     private boolean isOnGround(BitmapHitBox hitBox){
         MutableHitBox bottomLocs = new BitmapHitBox();
         MutableHitBox translatedBottomLocs = new BitmapHitBox();
-        if (hitBox.getMinY() <= craft.getType().getMinHeightLimit()) {
+        if (hitBox.getMinY() <= craft.getType().getMinHeightLimit(craft.getW())) {
             return true;
         }
         MovecraftLocation corner1 = new MovecraftLocation(hitBox.getMinX(), 0, hitBox.getMinZ());
@@ -747,12 +884,72 @@ public class TranslationTask extends AsyncTask {
             translatedBottomLocsInAir = false;
             break;
         }
+        if (Settings.Debug) {
+            final Logger log = Movecraft.getInstance().getLogger();
+            log.info("Translated bottom locs in air: " + translatedBottomLocsInAir);
+            log.info("Bottom locs on ground: " + bottomLocsOnGround);
+        }
         if (dy > 0){
             return bottomLocsOnGround && translatedBottomLocsInAir;
         }
         return !translatedBottomLocsInAir;
     }
 
+    private boolean checkFuel() {
+        double fuelBurnRate = craft.getType().getFuelBurnRate(world);
+        if (fuelBurnRate <= 0.0 || (dy == -1 && dx == 0 && dz == 0) || craft.getSinking())
+            return true;
+        // check for fuel, burn some from a furnace if needed. Blocks of coal are supported, in addition to coal and charcoal
+
+        // going down doesn't require fuel
+        if (dy > 0)
+            fuelBurnRate *= 2;
+        if (craft.getBurningFuel() >= fuelBurnRate) {
+            craft.setBurningFuel(craft.getBurningFuel() - fuelBurnRate);
+            return true;
+        }
+        try {
+            return Bukkit.getScheduler().callSyncMethod(Movecraft.getInstance(), () -> {
+                Block fuelHolder = null;
+                for (MovecraftLocation bTest : oldHitBox) {
+                    Block b = craft.getWorld().getBlockAt(bTest.getX(), bTest.getY(), bTest.getZ());
+                    //Get all fuel holders
+                    if (b.getType() == Material.FURNACE) {
+                        InventoryHolder holder = (InventoryHolder) b.getState();
+                        for (Material fuel : Settings.FuelTypes.keySet()) {
+                            if (holder.getInventory().contains(fuel)) {
+                                fuelHolder = b;
+                                break;
+                            }
+                        }
+                    }
+                    if (fuelHolder != null) break;
+
+                }
+                if (fuelHolder == null) {
+                    fail(I18nSupport.getInternationalisedString("Translation - Failed Craft out of fuel"));
+                    return false;
+                }
+                Furnace furnace = (Furnace) fuelHolder.getState();
+                for (Material fuel : Settings.FuelTypes.keySet()){
+                    if (furnace.getInventory().contains(fuel)){
+                        ItemStack item = furnace.getInventory().getItem(furnace.getInventory().first(fuel));
+                        int amount = item.getAmount();
+                        if (amount == 1) {
+                            furnace.getInventory().remove(item);
+                        } else {
+                            item.setAmount(amount - 1);
+                        }
+                        craft.setBurningFuel(craft.getBurningFuel() + Settings.FuelTypes.get(item.getType()));
+                    }
+                }
+                return true;
+            }).get();
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
     public boolean failed(){
         return failed;
     }

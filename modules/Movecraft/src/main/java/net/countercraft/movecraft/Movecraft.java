@@ -26,6 +26,7 @@ import com.sk89q.worldguard.bukkit.WorldGuardPlugin;
 import net.countercraft.movecraft.async.AsyncManager;
 import net.countercraft.movecraft.commands.*;
 import net.countercraft.movecraft.config.Settings;
+import net.countercraft.movecraft.craft.ChunkManager;
 import net.countercraft.movecraft.craft.CraftManager;
 import net.countercraft.movecraft.listener.BlockListener;
 import net.countercraft.movecraft.listener.InteractListener;
@@ -173,43 +174,6 @@ public class Movecraft extends JavaPlugin {
         }
         this.getLogger().info(I18nSupport.getInternationalisedString("Startup - Loading Support") + " " + version);
 
-        Map<String, Object> tempStatusSignMarkers = getConfig().getConfigurationSection("StatusSignMarkers").getValues(false);
-        for (String s : tempStatusSignMarkers.keySet()){
-            List<Material> materialList = new ArrayList<>();
-            if (s.contains(",")){
-                String[] split = s.split(",");
-                for (String str : split){
-                    materialList.add(Material.getMaterial(str.toUpperCase()));
-                }
-            } else if (s.toUpperCase().startsWith("ALL_")){
-                String str = s.toUpperCase().replace("ALL_", "");
-                for (Material type : Material.values()){
-                    if (type.name().endsWith(str)){
-                        materialList.add(type);
-                    }
-                }
-            } else if (s.contains("0") || s.contains("1") || s.contains("2") || s.contains("3") || s.contains("4") || s.contains("5") || s.contains("6") || s.contains("7") || s.contains("8") || s.contains("9")) {
-                Material type;
-                try {
-                    type = LegacyUtils.getMaterial(Integer.parseInt(s));
-                } catch (Throwable t){
-                    throw new IllegalArgumentException("Startup - Numerical IDs not supported", t);
-                }
-                if (type != null){
-                    materialList.add(type);
-                }
-            } else {
-                materialList.add(Material.getMaterial(s.toUpperCase()));
-            }
-            Object obj = tempStatusSignMarkers.get(s);
-            if (!(obj instanceof String)){
-                throw new IllegalArgumentException(String.format(I18nSupport.getInternationalisedString("Startup - Status sign marker must be string"), obj));
-            }
-            Collections.sort(materialList);
-            String marker = (String) obj;
-            Settings.StatusSignMarkers.put(materialList, marker);
-        }
-
         Settings.SinkCheckTicks = getConfig().getDouble("SinkCheckTicks", 100.0);
         Settings.TracerRateTicks = getConfig().getDouble("TracerRateTicks", 5.0);
         Settings.TracerMinDistanceSqrd = getConfig().getLong("TracerMinDistance", 60);
@@ -225,6 +189,8 @@ public class Movecraft extends JavaPlugin {
         Settings.AllowCrewSigns = getConfig().getBoolean("AllowCrewSigns", true);
         Settings.SetHomeToCrewSign = getConfig().getBoolean("SetHomeToCrewSign", true);
         Settings.MaxRemoteSigns = getConfig().getInt("MaxRemoteSigns", -1);
+        Settings.CraftsUseNetherPortals = getConfig().getBoolean("CraftsUseNetherPortals", false);
+        Settings.CheckForUpdates = getConfig().getBoolean("CheckForUpdates", true);
         Settings.RequireCreatePerm = getConfig().getBoolean("RequireCreatePerm", false);
         Settings.RequireNamePerm = getConfig().getBoolean("RequireNamePerm", false);
         Settings.TNTContactExplosives = getConfig().getBoolean("TNTContactExplosives", true);
@@ -447,7 +413,6 @@ public class Movecraft extends JavaPlugin {
             }
 
             if(Settings.SiegeEnable) {
-
                 siegeManager = new SiegeManager(this);
                 logger.info("Enabling siege");
                 //load the sieges.yml file
@@ -528,6 +493,7 @@ public class Movecraft extends JavaPlugin {
             }
             getServer().getPluginManager().registerEvents(new BlockListener(), this);
             getServer().getPluginManager().registerEvents(new PlayerListener(), this);
+            getServer().getPluginManager().registerEvents(new ChunkManager(), this);
             getServer().getPluginManager().registerEvents(new AntiAircraftDirectorSign(), this);
             getServer().getPluginManager().registerEvents(new AscendSign(), this);
             getServer().getPluginManager().registerEvents(new CannonDirectorSign(), this);
